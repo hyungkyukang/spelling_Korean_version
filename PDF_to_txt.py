@@ -4,12 +4,15 @@ import zipfile
 import re
 from spellchecker import SpellChecker
 import csv
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from datetime import datetime
+import os
 
 # ---------------------------------------------------
-# MUST BE FIRST: Streamlit page settings
+# PAGE CONFIG MUST COME FIRST
 # ---------------------------------------------------
 st.set_page_config(
     page_title="맞춤법 검사기",
@@ -18,7 +21,19 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------
-# Tokenizer (preserves surface form)
+# Register Korean Font
+# ---------------------------------------------------
+FONT_PATH = "fonts/NanumGothic.ttf"   # ★ GitHub repo에 이 파일 넣기
+
+if os.path.exists(FONT_PATH):
+    pdfmetrics.registerFont(TTFont("NanumGothic", FONT_PATH))
+    PDF_FONT = "NanumGothic"
+else:
+    # fallback (PDF는 한글 깨짐)
+    PDF_FONT = "Helvetica"
+
+# ---------------------------------------------------
+# Tokenizer (preserves original surface form)
 # ---------------------------------------------------
 def tokenize_text(text: str):
     raw_tokens = text.split()
@@ -31,7 +46,7 @@ def tokenize_text(text: str):
     return tokens
 
 # ---------------------------------------------------
-# Candidate word rules
+# Candidate rules
 # ---------------------------------------------------
 def is_candidate_word(tok: str) -> bool:
     return tok.isalpha() and len(tok) > 2 and not tok.isupper()
@@ -60,7 +75,7 @@ def analyze_spelling(text: str, spell_checker: SpellChecker):
     return corrections, errors
 
 # ---------------------------------------------------
-# PDF Generator (Styled)
+# Styled PDF (Korean supported)
 # ---------------------------------------------------
 def make_pdf(corrections: dict, total_words: int, error_words: int):
     buffer = io.BytesIO()
@@ -71,12 +86,12 @@ def make_pdf(corrections: dict, total_words: int, error_words: int):
     y = height - margin
 
     # Title
-    c.setFont("Helvetica-Bold", 20)
+    c.setFont(PDF_FONT, 20)
     c.drawString(margin, y, "맞춤법 검사 결과 보고서")
     y -= 30
 
     # Date
-    c.setFont("Helvetica", 12)
+    c.setFont(PDF_FONT, 12)
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
     c.drawString(margin, y, f"생성 일시: {today}")
     y -= 20
@@ -87,11 +102,11 @@ def make_pdf(corrections: dict, total_words: int, error_words: int):
     y -= 30
 
     # Summary
-    c.setFont("Helvetica-Bold", 14)
+    c.setFont(PDF_FONT, 14)
     c.drawString(margin, y, "요약 정보")
     y -= 25
 
-    c.setFont("Helvetica", 12)
+    c.setFont(PDF_FONT, 12)
     c.drawString(margin, y, f"- 총 단어 수: {total_words}")
     y -= 20
     c.drawString(margin, y, f"- 오류 단어 수: {error_words}")
@@ -102,11 +117,12 @@ def make_pdf(corrections: dict, total_words: int, error_words: int):
     y -= 30
 
     # Error list
-    c.setFont("Helvetica-Bold", 14)
+    c.setFont(PDF_FONT, 14)
     c.drawString(margin, y, "오류 단어 목록")
     y -= 25
 
-    c.setFont("Helvetica", 12)
+    c.setFont(PDF_FONT, 12)
+
     if len(corrections) == 0:
         c.drawString(margin, y, "(오류 없음)")
         y -= 20
@@ -115,7 +131,7 @@ def make_pdf(corrections: dict, total_words: int, error_words: int):
             if y < 70:
                 c.showPage()
                 y = height - margin
-                c.setFont("Helvetica", 12)
+                c.setFont(PDF_FONT, 12)
 
             c.drawString(margin, y, f"{wrong:<20} → {correct}")
             y -= 20
@@ -137,10 +153,10 @@ st.markdown(
         </h2>
     </div>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
 
-st.write("여러 개의 `.txt` 파일을 업로드하면 CSV와 PDF 결과가 ZIP으로 제공됩니다.")
+st.write("여러 개의 `.txt` 파일을 업로드하면 CSV/PDF 결과가 ZIP으로 제공됩니다.")
 
 uploaded_files = st.file_uploader(
     "📄 txt 파일 업로드",
@@ -157,7 +173,7 @@ if uploaded_files:
 
 if st.button("🚀 맞춤법 검사 실행"):
     if not uploaded_files:
-        st.warning("txt 파일을 최소 1개 업로드해야 합니다.")
+        st.warning("txt 파일을 최소 1개 업로드해주세요.")
     else:
         spell = SpellChecker()
         zip_buffer = io.BytesIO()
@@ -198,5 +214,5 @@ if st.button("🚀 맞춤법 검사 실행"):
             label="📦 ZIP 파일 다운로드",
             data=zip_buffer,
             file_name=f"맞춤법_검사_결과_{now}.zip",
-            mime="application/zip",
+            mime="application/zip"
         )
