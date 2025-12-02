@@ -1,8 +1,7 @@
 import streamlit as st
-import zipfile
 import io
+import zipfile
 import re
-from pathlib import Path
 from spellchecker import SpellChecker
 import csv
 from reportlab.lib.pagesizes import A4
@@ -10,12 +9,25 @@ from reportlab.pdfgen import canvas
 from datetime import datetime
 
 # -----------------------------------
-# Text Processing (NLTK → 정규식으로 교체)
+# Tokenizer (surface form preserving)
 # -----------------------------------
 def tokenize_text(text: str):
-    # 영어 알파벳 단어만 추출
-    return re.findall(r"[A-Za-z]+", text)
+    """
+    Return list of (surface_token, alphabet_only_token)
+    """
+    raw_tokens = text.split()
+    tokens = []
 
+    for t in raw_tokens:
+        clean = re.sub(r"[^A-Za-z]", "", t)
+        if clean:  # 영어 알파벳 포함된 경우만
+            tokens.append((t, clean))
+    return tokens
+
+
+# -----------------------------------
+# Candidate word check
+# -----------------------------------
 def is_candidate_word(tok: str) -> bool:
     if not tok.isalpha():
         return False
@@ -25,27 +37,36 @@ def is_candidate_word(tok: str) -> bool:
         return False
     return True
 
-def count_real_words(text: str) -> int:
+
+# -----------------------------------
+# Count real words
+# -----------------------------------
+def count_real_words(text: str):
     return len(re.findall(r"[A-Za-z]+", text))
 
+
+# -----------------------------------
+# Spelling analysis
+# -----------------------------------
 def analyze_spelling(text: str, spell_checker: SpellChecker):
     tokens = tokenize_text(text)
-    candidate_words = [t.lower() for t in tokens if is_candidate_word(t)]
-    misspelled = spell_checker.unknown(candidate_words)
-
     corrections = {}
     error_count = 0
 
-    for surface in candidate_words:
-        if surface in misspelled:
-            suggestion = spell_checker.correction(surface) or surface
-            corrections[surface] = suggestion
-            error_count += 1
+    for surface, clean in tokens:
+        if is_candidate_word(clean):
+            lw = clean.lower()
+
+            if lw in spell_checker.unknown([lw]):
+                suggestion = spell_checker.correction(lw) or surface
+                corrections[surface] = suggestion
+                error_count += 1
 
     return corrections, error_count
 
+
 # -----------------------------------
-# PDF 생성 함수
+# PDF generation
 # -----------------------------------
 def make_pdf(corrections: dict, total_words: int, error_words: int):
     buffer = io.BytesIO()
@@ -74,22 +95,22 @@ def make_pdf(corrections: dict, total_words: int, error_words: int):
         if y < 50:
             c.showPage()
             y = height - 50
-            c.setFont("Helvetica", 11)
 
     c.save()
     buffer.seek(0)
     return buffer
 
+
 # -----------------------------------
-# Streamlit UI
+# Streamlit App UI
 # -----------------------------------
 st.title("맞춤법 검사 프로그램 (Streamlit 버전)")
-st.write("여러 개의 `.txt` 파일을 업로드하면 CSV와 PDF 결과를 ZIP으로 다운로드할 수 있습니다.")
+st.write("여러 개의 `.txt` 파일을 업로드하면 CSV와 PDF 결과를 ZIP 파일로 다운로드할 수 있습니다.")
 
 uploaded_files = st.file_uploader(
     "txt 파일 업로드",
     accept_multiple_files=True,
-    type=["txt"]
+    type=["txt"],
 )
 
 if st.button("맞춤법 검사 실행"):
@@ -112,8 +133,10 @@ if st.button("맞춤법 검사 실행"):
                 csv_buffer = io.StringIO()
                 writer = csv.writer(csv_buffer)
                 writer.writerow(["잘못된 단어", "수정 제안"])
+
                 for wrong, correct in corrections.items():
                     writer.writerow([wrong, correct])
+
                 writer.writerow([])
                 writer.writerow(["총 단어 수", total_words])
                 writer.writerow(["오류 단어 수", error_count])
@@ -134,5 +157,5 @@ if st.button("맞춤법 검사 실행"):
             label="ZIP 파일 다운로드",
             data=zip_buffer,
             file_name=f"맞춤법_검사_결과_{now}.zip",
-            mime="application/zip"
+            mime="application/zip",
         )
