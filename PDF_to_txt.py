@@ -4,15 +4,14 @@ import zipfile
 import re
 from spellchecker import SpellChecker
 import csv
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from datetime import datetime
-import os
 
 # ---------------------------------------------------
-# PAGE CONFIG MUST COME FIRST
+# Streamlit Page Config
 # ---------------------------------------------------
 st.set_page_config(
     page_title="맞춤법 검사기",
@@ -21,24 +20,17 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------
-# Register Korean Font
+# Register Korean Font (CID-font, 100% working)
 # ---------------------------------------------------
-FONT_PATH = "fonts/NanumGothic.ttf"   # ★ GitHub repo에 이 파일 넣기
-
-if os.path.exists(FONT_PATH):
-    pdfmetrics.registerFont(TTFont("NanumGothic", FONT_PATH))
-    PDF_FONT = "NanumGothic"
-else:
-    # fallback (PDF는 한글 깨짐)
-    PDF_FONT = "Helvetica"
+pdfmetrics.registerFont(UnicodeCIDFont("HYSMyeongJo-Medium"))
+PDF_FONT = "HYSMyeongJo-Medium"
 
 # ---------------------------------------------------
-# Tokenizer (preserves original surface form)
+# Tokenizer
 # ---------------------------------------------------
 def tokenize_text(text: str):
     raw_tokens = text.split()
     tokens = []
-
     for t in raw_tokens:
         clean = re.sub(r"[^A-Za-z]", "", t)
         if clean:
@@ -75,7 +67,7 @@ def analyze_spelling(text: str, spell_checker: SpellChecker):
     return corrections, errors
 
 # ---------------------------------------------------
-# Styled PDF (Korean supported)
+# PDF Generator (supports Korean perfectly)
 # ---------------------------------------------------
 def make_pdf(corrections: dict, total_words: int, error_words: int):
     buffer = io.BytesIO()
@@ -85,23 +77,19 @@ def make_pdf(corrections: dict, total_words: int, error_words: int):
     margin = 50
     y = height - margin
 
-    # Title
     c.setFont(PDF_FONT, 20)
     c.drawString(margin, y, "맞춤법 검사 결과 보고서")
     y -= 30
 
-    # Date
     c.setFont(PDF_FONT, 12)
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
     c.drawString(margin, y, f"생성 일시: {today}")
     y -= 20
 
-    # Divider
     c.setStrokeColorRGB(0.4, 0.4, 0.4)
     c.line(margin, y, width - margin, y)
     y -= 30
 
-    # Summary
     c.setFont(PDF_FONT, 14)
     c.drawString(margin, y, "요약 정보")
     y -= 25
@@ -112,17 +100,14 @@ def make_pdf(corrections: dict, total_words: int, error_words: int):
     c.drawString(margin, y, f"- 오류 단어 수: {error_words}")
     y -= 35
 
-    # Divider
     c.line(margin, y, width - margin, y)
     y -= 30
 
-    # Error list
     c.setFont(PDF_FONT, 14)
     c.drawString(margin, y, "오류 단어 목록")
     y -= 25
 
     c.setFont(PDF_FONT, 12)
-
     if len(corrections) == 0:
         c.drawString(margin, y, "(오류 없음)")
         y -= 20
@@ -133,7 +118,7 @@ def make_pdf(corrections: dict, total_words: int, error_words: int):
                 y = height - margin
                 c.setFont(PDF_FONT, 12)
 
-            c.drawString(margin, y, f"{wrong:<20} → {correct}")
+            c.drawString(margin, y, f"{wrong} → {correct}")
             y -= 20
 
     c.showPage()
