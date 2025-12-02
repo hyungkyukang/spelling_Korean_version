@@ -1,74 +1,165 @@
-import os
-import tempfile
-
 import streamlit as st
-from PyPDF2 import PdfReader
-from docx import Document
+import zipfile
+import io
+from pathlib import Path
+from spellchecker import SpellChecker
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.tokenize.treebank import TreebankWordDetokenizer
+import csv
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
+# -----------------------------------
+# NLTK Setup
+# -----------------------------------
+def ensure_nltk():
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt', quiet=True)
 
-def pdf_to_docx_simple(pdf_path: str, docx_path: str):
-    reader = PdfReader(pdf_path)
-    doc = Document()
+# -----------------------------------
+# Text Processing
+# -----------------------------------
+def tokenize_text(text: str):
+    return word_tokenize(text)
 
-    for i, page in enumerate(reader.pages):
-        text = page.extract_text()
-        if text:
-            for line in text.splitlines():
-                doc.add_paragraph(line)
-        if i < len(reader.pages) - 1:
-            doc.add_page_break()
+def is_candidate_word(tok: str) -> bool:
+    if not tok.isalpha():
+        return False
+    if len(tok) <= 2:
+        return False
+    if tok.isupper():
+        return False
+    return True
 
-    doc.save(docx_path)
+def count_real_words(text: str) -> int:
+    return sum(1 for t in tokenize_text(text) if t.isalpha())
 
+def analyze_spelling(text: str, spell_checker: SpellChecker):
+    tokens = tokenize_text(text)
+    candidate_indices = [i for i, t in enumerate(tokens) if is_candidate_word(t)]
+    candidate_words = [tokens[i].lower() for i in candidate_indices]
+    misspelled = spell_checker.unknown(candidate_words)
 
-def main():
-    st.set_page_config(page_title="PDF → DOCX 변환기 (텍스트만)", page_icon="📄")
-    st.title("📄 PDF를 DOCX로 변환하기 (텍스트만 추출)")
-    st.write("레이아웃·이미지는 무시하고, PDF 안의 텍스트만 DOCX 파일로 변환합니다.")
+    corrections = {}
+    error_count = 0
 
-    uploaded_file = st.file_uploader("PDF 파일을 업로드하세요", type=["pdf"])
+    for idx, lw in zip(candidate_indices, candidate_words):
+        if lw in misspelled:
+            surface = tokens[idx]
+            suggestion = spell_checker.correction(lw) or surface
+            corrections[surface] = suggestion
+            error_count += 1
 
-    if st.button("변환 시작"):
-        if uploaded_file is None:
-            st.warning("먼저 PDF 파일을 업로드해주세요.")
-            return
+    return corrections, error_count
 
-        with st.spinner("PDF를 처리하는 중입니다..."):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
-                tmp_pdf.write(uploaded_file.read())
-                pdf_path = tmp_pdf.name
+def correct_spelling(text: str, spell_checker: SpellChecker):
+    detok = TreebankWordDetokenizer()
+    tokens = tokenize_text(text)
 
-            base_name = os.path.splitext(os.path.basename(uploaded_file.name))[0]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_docx:
-                docx_path = tmp_docx.name
+    candidate_indices = [i for i, t in enumerate(tokens) if is_candidate_word(t)]
+    candidate_words = [tokens[i].lower() for i in candidate_indices]
+    misspelled = spell_checker.unknown(candidate_words)
 
-            try:
-                pdf_to_docx_simple(pdf_path, docx_path)
+    for i, lw in zip(candidate_indices, candidate_words):
+        if lw in misspelled:
+            tokens[i] = spell_checker.correction(lw)
 
-                with open(docx_path, "rb") as f:
-                    docx_data = f.read()
+    return detok.detokenize(tokens)
 
-                st.success("변환이 완료되었습니다!")
-                st.download_button(
-                    label="DOCX 파일 다운로드",
-                    data=docx_data,
-                    file_name=f"{base_name}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
+# -----------------------------------
+# PDF 생성 함수
+# -----------------------------------
+def make_pdf(corrections: dict, total_words: int, error_words: int):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
 
-            except Exception as e:
-                st.error(f"변환 중 오류가 발생했습니다: {e}")
+    y = height - 50
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, y, "맞춤법 검사 결과 보고서")
+    y -= 40
 
-            finally:
-                try:
-                    os.remove(pdf_path)
-                except Exception:
-                    pass
-                try:
-                    os.remove(docx_path)
-                except Exception:
-                    pass
+    c.setFont("Helvetica", 12)
+    c.drawString(50, y, f"총 단어 수: {total_words}")
+    y -= 20
+    c.drawString(50, y, f"오류 단어 수: {error_words}")
+    y -= 40
 
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "오류 단어 목록:")
+    y -= 30
 
-if __name__ == "__main__":
-    main()
+    c.setFont("Helvetica", 11)
+    for wrong, correct in corrections.items():
+        c.drawString(60, y, f"{wrong} → {correct}")
+        y -= 20
+
+        if y < 50:
+            c.showPage()
+            y = height - 50
+
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+# -----------------------------------
+# Streamlit UI
+# -----------------------------------
+st.title("맞춤법 검사 프로그램 (Streamlit 버전)")
+
+st.write("여러 개의 `.txt` 파일을 업로드하면 CSV와 PDF 결과를 ZIP으로 다운로드할 수 있습니다.")
+
+uploaded_files = st.file_uploader(
+    "txt 파일 업로드",
+    accept_multiple_files=True,
+    type=["txt"]
+)
+
+if st.button("맞춤법 검사 실행"):
+    if not uploaded_files:
+        st.warning("txt 파일을 최소 1개 업로드해야 합니다.")
+    else:
+        ensure_nltk()
+        spell = SpellChecker()
+
+        zip_buffer = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, "w") as zipf:
+            for file in uploaded_files:
+                text = file.read().decode("utf-8", errors="ignore")
+
+                corrections, error_count = analyze_spelling(text, spell)
+                corrected_text = correct_spelling(text, spell)
+                total_words = count_real_words(text)
+
+                # CSV 생성
+                csv_buffer = io.StringIO()
+                writer = csv.writer(csv_buffer)
+                writer.writerow(["잘못된 단어", "수정 제안"])
+                for wrong, correct in corrections.items():
+                    writer.writerow([wrong, correct])
+                writer.writerow([])
+                writer.writerow(["총 단어 수", total_words])
+                writer.writerow(["오류 단어 수", error_count])
+
+                csv_filename = f"{file.name}_결과.csv"
+                zipf.writestr(csv_filename, csv_buffer.getvalue())
+
+                # PDF 생성
+                pdf_buffer = make_pdf(corrections, total_words, error_count)
+                pdf_filename = f"{file.name}_결과.pdf"
+                zipf.writestr(pdf_filename, pdf_buffer.read())
+
+        zip_buffer.seek(0)
+
+        st.success("처리가 완료되었습니다!")
+
+        st.download_button(
+            label="ZIP 파일 다운로드",
+            data=zip_buffer,
+            file_name="맞춤법_검사_결과.zip",
+            mime="application/zip"
+        )
