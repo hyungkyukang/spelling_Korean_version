@@ -9,37 +9,28 @@ from reportlab.pdfgen import canvas
 from datetime import datetime
 
 # -----------------------------------
-# Tokenizer (surface form preserving)
+# Tokenizer preserving surface tokens
 # -----------------------------------
 def tokenize_text(text: str):
-    """
-    Return list of (surface_token, alphabet_only_token)
-    """
     raw_tokens = text.split()
     tokens = []
 
     for t in raw_tokens:
         clean = re.sub(r"[^A-Za-z]", "", t)
-        if clean:  # 영어 알파벳 포함된 경우만
+        if clean:
             tokens.append((t, clean))
     return tokens
 
 
 # -----------------------------------
-# Candidate word check
+# Candidate word rules
 # -----------------------------------
 def is_candidate_word(tok: str) -> bool:
-    if not tok.isalpha():
-        return False
-    if len(tok) <= 2:
-        return False
-    if tok.isupper():
-        return False
-    return True
+    return tok.isalpha() and len(tok) > 2 and not tok.isupper()
 
 
 # -----------------------------------
-# Count real words
+# Count words
 # -----------------------------------
 def count_real_words(text: str):
     return len(re.findall(r"[A-Za-z]+", text))
@@ -51,111 +42,76 @@ def count_real_words(text: str):
 def analyze_spelling(text: str, spell_checker: SpellChecker):
     tokens = tokenize_text(text)
     corrections = {}
-    error_count = 0
+    errors = 0
 
     for surface, clean in tokens:
         if is_candidate_word(clean):
             lw = clean.lower()
-
             if lw in spell_checker.unknown([lw]):
-                suggestion = spell_checker.correction(lw) or surface
-                corrections[surface] = suggestion
-                error_count += 1
+                corrections[surface] = spell_checker.correction(lw) or surface
+                errors += 1
 
-    return corrections, error_count
+    return corrections, errors
 
 
 # -----------------------------------
-# PDF generation
+# PDF (Upgraded layout)
 # -----------------------------------
 def make_pdf(corrections: dict, total_words: int, error_words: int):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
+
     width, height = A4
+    margin = 50
+    y = height - margin
 
-    y = height - 50
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, y, "맞춤법 검사 결과 보고서")
-    y -= 40
-
-    c.setFont("Helvetica", 12)
-    c.drawString(50, y, f"총 단어 수: {total_words}")
-    y -= 20
-    c.drawString(50, y, f"오류 단어 수: {error_words}")
-    y -= 40
-
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, y, "오류 단어 목록:")
+    # Title
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(margin, y, "맞춤법 검사 결과 보고서")
     y -= 30
 
-    c.setFont("Helvetica", 11)
-    for wrong, correct in corrections.items():
-        c.drawString(60, y, f"{wrong} → {correct}")
+    # Date
+    c.setFont("Helvetica", 12)
+    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    c.drawString(margin, y, f"생성 일시: {today}")
+    y -= 20
+
+    # Divider line
+    c.setStrokeColorRGB(0.5, 0.5, 0.5)
+    c.setLineWidth(1)
+    c.line(margin, y, width - margin, y)
+    y -= 30
+
+    # Summary section
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(margin, y, "요약 정보")
+    y -= 25
+
+    c.setFont("Helvetica", 12)
+    c.drawString(margin, y, f"- 총 단어 수: {total_words}")
+    y -= 20
+    c.drawString(margin, y, f"- 오류 단어 수: {error_words}")
+    y -= 35
+
+    # Divider
+    c.line(margin, y, width - margin, y)
+    y -= 30
+
+    # Error list
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(margin, y, "오류 단어 목록")
+    y -= 25
+
+    c.setFont("Helvetica", 12)
+
+    if len(corrections) == 0:
+        c.drawString(margin, y, "(오류 없음)")
         y -= 20
-        if y < 50:
-            c.showPage()
-            y = height - 50
-
-    c.save()
-    buffer.seek(0)
-    return buffer
-
-
-# -----------------------------------
-# Streamlit App UI
-# -----------------------------------
-st.title("맞춤법 검사 프로그램 (Streamlit 버전)")
-st.write("여러 개의 `.txt` 파일을 업로드하면 CSV와 PDF 결과를 ZIP 파일로 다운로드할 수 있습니다.")
-
-uploaded_files = st.file_uploader(
-    "txt 파일 업로드",
-    accept_multiple_files=True,
-    type=["txt"],
-)
-
-if st.button("맞춤법 검사 실행"):
-    if not uploaded_files:
-        st.warning("txt 파일을 최소 1개 업로드해야 합니다.")
     else:
-        spell = SpellChecker()
+        for wrong, correct in corrections.items():
+            if y < 70:
+                c.showPage()
+                y = height - margin
+                c.setFont("Helvetica", 12)
 
-        zip_buffer = io.BytesIO()
-        now = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        with zipfile.ZipFile(zip_buffer, "w") as zipf:
-            for file in uploaded_files:
-                text = file.read().decode("utf-8", errors="ignore")
-
-                corrections, error_count = analyze_spelling(text, spell)
-                total_words = count_real_words(text)
-
-                # CSV 생성
-                csv_buffer = io.StringIO()
-                writer = csv.writer(csv_buffer)
-                writer.writerow(["잘못된 단어", "수정 제안"])
-
-                for wrong, correct in corrections.items():
-                    writer.writerow([wrong, correct])
-
-                writer.writerow([])
-                writer.writerow(["총 단어 수", total_words])
-                writer.writerow(["오류 단어 수", error_count])
-
-                csv_filename = f"{file.name}_결과.csv"
-                zipf.writestr(csv_filename, csv_buffer.getvalue())
-
-                # PDF 생성
-                pdf_buffer = make_pdf(corrections, total_words, error_count)
-                pdf_filename = f"{file.name}_결과.pdf"
-                zipf.writestr(pdf_filename, pdf_buffer.read())
-
-        zip_buffer.seek(0)
-
-        st.success("처리가 완료되었습니다!")
-
-        st.download_button(
-            label="ZIP 파일 다운로드",
-            data=zip_buffer,
-            file_name=f"맞춤법_검사_결과_{now}.zip",
-            mime="application/zip",
-        )
+            c.drawString(margin, y, f"{wrong:<20}  →  {correct}")
